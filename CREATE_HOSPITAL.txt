@@ -1,0 +1,200 @@
+DROP TABLE IF EXISTS registrar;
+DROP TABLE IF EXISTS houseman;
+DROP TABLE IF EXISTS junior_doctor;
+DROP TABLE IF EXISTS team;
+DROP TABLE IF EXISTS looks_after;
+DROP TABLE IF EXISTS consultant;
+DROP TABLE IF EXISTS doctor;
+DROP TABLE IF EXISTS patient;
+DROP TABLE IF EXISTS supervisor;
+DROP TABLE IF EXISTS nurse;
+DROP TABLE IF EXISTS ward;
+
+CREATE TABLE ward (
+    ward_no serial primary key,
+    name varchar(30),
+    number_of_beds smallint
+);
+
+CREATE TABLE nurse (
+    nurse_id serial primary key,
+    name varchar(30),
+    date_qualified date not null,
+    ward_no integer references ward(ward_no)
+);
+CREATE INDEX ON nurse(ward_no);
+
+CREATE TABLE supervisor (
+    nurse_id integer references nurse(nurse_id) primary key,
+    supervisor_id integer references nurse(nurse_id)
+);
+CREATE INDEX ON supervisor(supervisor_id);
+
+CREATE TABLE patient (
+    patient_id serial primary key,
+    name varchar(30),
+    address varchar(100),
+    dob date,
+    ward_no integer references ward(ward_no)
+);
+CREATE INDEX ON patient(ward_no);
+
+CREATE TABLE doctor (
+    staff_no serial primary key,
+    name varchar(30),
+    appointment_date date not null,
+    salary real not null
+);
+
+CREATE TABLE consultant (
+    staff_no integer references doctor(staff_no) primary key,
+    specialism varchar(30)
+);
+
+CREATE OR REPLACE FUNCTION made_consultant()
+    RETURNS trigger AS
+    $$
+    BEGIN
+        DELETE FROM junior_doctor
+        WHERE junior_doctor.staff_no = new.staff_no;
+    RETURN new;
+    end;
+    $$
+    language plpgsql;
+
+CREATE TRIGGER remove_junior
+    BEFORE INSERT ON consultant
+    FOR EACH ROW
+    EXECUTE PROCEDURE made_consultant();
+
+CREATE TABLE looks_after (
+    staff_no integer references consultant(staff_no),
+    patient_id integer references patient(patient_id) primary key
+);
+CREATE INDEX ON looks_after(staff_no);
+
+CREATE TABLE team (
+    team_code serial primary key,
+    contact_no varchar(13) unique not null,
+    consultant integer references consultant(staff_no)
+);
+CREATE INDEX ON team(consultant);
+
+CREATE TABLE junior_doctor (
+    staff_no integer unique,
+    constraint jr_id FOREIGN KEY (staff_no)
+    references doctor(staff_no) on delete cascade,
+    team integer references team(team_code)
+);
+CREATE INDEX ON junior_doctor(team);
+
+CREATE TABLE houseman (
+    staff_no int,
+    constraint hs_id foreign key (staff_no)
+    references junior_doctor(staff_no) on delete cascade,
+    probation_end date not null
+);
+
+CREATE TABLE registrar (
+    staff_no int,
+    constraint re_id foreign key (staff_no)
+    references junior_doctor(staff_no) on delete cascade,
+    training_spec varchar(30) not null
+);
+
+INSERT INTO doctor (name, appointment_date, salary)
+VALUES
+        ('Connor Podesta', '2021-09-06', 51000),
+        ('Cian Toner', '2021-06-05', 60000),
+        ('Robbie Booth', '2020-04-13', 16000),
+        ('Scott Reid', '2022-09-19', 10000),
+        ('Omar Albasri', '2019-09-09', 20000),
+        ('Patryk Wrzesniewski', '2022-11-10', 12000);
+
+INSERT INTO consultant (staff_no, specialism)
+SELECT staff_no, 'Neurology'
+FROM doctor
+WHERE name = 'Cian Toner';
+
+INSERT INTO team (contact_no, consultant)
+SELECT '+447388020618', consultant.staff_no
+FROM consultant, doctor
+WHERE consultant.staff_no = doctor.staff_no AND doctor.name = 'Cian Toner';
+
+INSERT INTO junior_doctor (staff_no, team)
+SELECT doctor.staff_no, 1
+FROM doctor, consultant
+where doctor.staff_no <> consultant.staff_no;
+
+INSERT INTO houseman (staff_no, probation_end)
+SELECT junior_doctor.staff_no, '2022-12-12'
+FROM junior_doctor, doctor
+WHERE junior_doctor.staff_no = doctor.staff_no AND doctor.name = 'Patryk Wrzesniewski';
+
+INSERT INTO registrar (staff_no, training_spec)
+SELECT junior_doctor.staff_no, 'Cardiology'
+FROM junior_doctor, doctor
+WHERE junior_doctor.staff_no = doctor.staff_no AND doctor.name = 'Robbie Booth';
+
+INSERT INTO consultant (staff_no, specialism)
+SELECT staff_no, 'General'
+FROM doctor
+WHERE name = 'Connor Podesta';
+
+INSERT INTO team (contact_no, consultant)
+SELECT '+447473478975', consultant.staff_no
+FROM consultant, doctor
+WHERE consultant.staff_no = doctor.staff_no AND doctor.name = 'Connor Podesta';
+
+UPDATE junior_doctor
+SET team = 2
+WHERE staff_no = 3 OR staff_no = 6;
+
+INSERT INTO ward (name, number_of_beds)
+VALUES
+    ('ICU', 10),
+    ('ER', 100),
+    ('Paeds', 20);
+
+INSERT INTO patient (name, address, dob, ward_no)
+VALUES
+    ('John Doe', null, null, 2),
+    ('Jane Doe', null, null, 2),
+    ('Peter Marshal', '186 St Saviours Road, Saltley, B8 1HG', '2003-10-15', 1),
+    ('Max Wall', '14 Falcon Lodge Crescent, Sutton Coldfield, B75 7RD', '2022-11-15', 3),
+    ('Kiera Smith', '11 Amblerise Close, Bolehall, B77 3AY', '1985-10-15', 2);
+
+INSERT INTO looks_after
+SELECT staff_no, patient_id
+FROM consultant, patient
+WHERE (specialism = 'General' AND ward_no = 2) OR (specialism = 'Neurology' AND (ward_no = 3 OR ward_no = 1));
+
+INSERT INTO nurse (name, date_qualified, ward_no)
+VALUES
+    ('Marcus Wallsh', '2020-10-19', 1),
+    ('Kyle Peters', '1972-06-03', 2),
+    ('Paula Sirgoney', '1999-09-09', 2),
+    ('Samantha Mctavish', '2004-10-05', 3);
+
+INSERT INTO supervisor (nurse_id, supervisor_id)
+SELECT nurse_id, (SELECT nurse_id FROM nurse WHERE name = 'Kyle Peters')
+FROM nurse
+WHERE name <> 'Kyle Peters';
+
+
+-- Count number of beds left in hospital
+SELECT (Beds.AllBed - Patients.Patients) AS Beds_Left
+FROM (SELECT COUNT(*) AS Patients FROM patient) As Patients,
+(SELECT SUM(number_of_beds) as AllBed From ward) AS Beds;
+
+-- Display each patients consultant
+SELECT patient.patient_id, patient.name patient_name, (SELECT name consultant_name FROM doctor WHERE doctor.staff_no = c.staff_no)
+FROM patient
+JOIN looks_after la ON patient.patient_id = la.patient_id
+JOIN consultant c ON la.staff_no = c.staff_no;
+
+-- Count number of available beds for each ward
+SELECT ward.name ward_name, (ward.number_of_beds - COUNT(patient.ward_no)) available_beds, ward.number_of_beds total_beds
+FROM ward, patient
+WHERE patient.ward_no = ward.ward_no
+GROUP BY ward.name, ward.number_of_beds
